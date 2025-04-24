@@ -9,13 +9,15 @@ namespace BlazorApp1.Client
     {
     }
 
-    public readonly struct JsonFile
+    public class JsonFile
     {
-        public string id { get; init; }
-        public string date { get; init; }
-        public float la { get; init; }
-        public float lo { get; init; }
-        public string icon { get; init; }
-        public bool? isApproved { get; init; }
+        public string id { get; set; }
+        public string date { get; set; }
+        public float la { get; set; }
+        public float lo { get; set; }
+        public string icon { get; set; }
+        public bool? isApproved { get; set; }
     }
+
+
 }

@@ -34,7 +34,7 @@ namespace BlazorApp1
 
             app.MapRazorComponents<App>()
                 .AddInteractiveWebAssemblyRenderMode()
-                .AddAdditionalAssemblies(typeof(Client._Imports).Assembly);
+                .AddAdditionalAssemblies(typeof(BlazorApp1.Client._Imports).Assembly);
 
             app.Run();
         }

@@ -3,6 +3,9 @@
 @using System.Text.Json.Serialization
 @using System.Text.Json
 @using System.Text.Json.Serialization.Metadata
+@using System.Text
+@using System.Globalization
+@using System.Buffers
 @rendermode @(new InteractiveWebAssemblyRenderMode(prerender: false))
 
 @inject HttpClient Client
@@ -30,6 +33,8 @@
     protected override async Task OnInitializedAsync()
     {
         await GetData2();
+        await GetData3();
+        await GetData4();
         shouldRender = true;
     }
     private async Task GetData1()
@@ -50,19 +55,194 @@
         using var responseStream = await Client.GetStreamAsync("bigdata.json");
         sw.Stop();
         Logger.LogInformation($"FILE LOADED: {sw.Elapsed}");
-        sw.Start();
-        /*
-         * var results1 = await System.Text.Json.JsonSerializer.DeserializeAsyncEnumerable<List<JsonFile>>(responseStream, SourceGenerationContext.Default.ListJsonFile)!.ToListAsync();
-         * sw.Stop();
-         * Logger.LogInformation($"Deserialize1: {sw.Elapsed}");
-         * Logger.LogInformation($"rows: {results1.Count}");
-         * sw.Start();
-         * responseStream.Position = 0;
-         */
-        var results2 = System.Text.Json.JsonSerializer.Deserialize<List<JsonFile>>(responseStream, SourceGenerationContext.Default.ListJsonFile)!;
+        sw.Restart();
+        var results1 = System.Text.Json.JsonSerializer.Deserialize<List<JsonFile>>(responseStream, SourceGenerationContext.Default.ListJsonFile)!;
         sw.Stop();
-        Logger.LogInformation($"Deserialize2: {sw.Elapsed}");
+        Logger.LogInformation($"Deserialize: {sw.Elapsed}");
+        responseStream.Position = 0;
+        sw.Restart();
+        var results2 = await ParseJsonFileStreamAsync(responseStream);
+        sw.Stop();
+        Logger.LogInformation($"ParseJsonFileStreamAsync: {sw.Elapsed}");
         Logger.LogInformation($"rows: {results2.Count}");
 
+
+    }
+
+
+    private async Task GetData3()
+    {
+        var sw = new Stopwatch();
+        sw.Start();
+        Logger.LogInformation($"LOADING FILE");
+        var reponseBytes = await Client.GetByteArrayAsync("bigdata.json");
+        sw.Stop();
+        Logger.LogInformation($"FILE LOADED: {sw.Elapsed}");
+        sw.Restart();
+        var data = SpanJson.JsonSerializer.Generic.Utf8.Deserialize<List<JsonFile>>(reponseBytes);
+        sw.Stop();
+        Logger.LogInformation($"SpanJson: {sw.Elapsed}");
+        Logger.LogInformation($"rows: {data.Count}");
+
+
+    }
+
+    private async Task GetData4()
+    {
+        var sw = new Stopwatch();
+        sw.Start();
+        Logger.LogInformation($"LOADING FILE");
+        var reponseString = await Client.GetStreamAsync("bigdata.csv");
+        sw.Stop();
+        Logger.LogInformation($"FILE LOADED: {sw.Elapsed}");
+        sw.Restart();
+        var data = await ParseCsvFile(reponseString);
+        sw.Stop();
+        Logger.LogInformation($"CSV: {sw.Elapsed}");
+        Logger.LogInformation($"rows: {data.Count}");
+
+
+    }
+
+    private static async Task<List<JsonFile>> ParseJsonFileStreamAsync(Stream jsonStream)
+    {
+        using var reader = new StreamReader(jsonStream, Encoding.UTF8);
+        char[] buffer = new char[8192];
+        int charsRead;
+        StringBuilder builder = new();
+
+        while ((charsRead = await reader.ReadAsync(buffer, 0, buffer.Length)) > 0)
+        {
+            builder.Append(buffer, 0, charsRead);
+        }
+
+        var result = new List<JsonFile>();
+        // This is still string-based but more efficient than full-buffering
+        var json = builder.ToString();
+        var bytes = Encoding.UTF8.GetBytes(json);
+        var jsonReader = new Utf8JsonReader(bytes);
+
+        if (!jsonReader.Read() || jsonReader.TokenType != JsonTokenType.StartArray)
+            throw new JsonException("Expected a JSON array.");
+
+        while (jsonReader.Read())
+        {
+            if (jsonReader.TokenType == JsonTokenType.EndArray)
+                break;
+
+            if (jsonReader.TokenType == JsonTokenType.StartObject)
+            {
+                var item = new JsonFile();
+
+                while (jsonReader.Read() && jsonReader.TokenType != JsonTokenType.EndObject)
+                {
+                    if (jsonReader.TokenType == JsonTokenType.PropertyName)
+                    {
+                        string propertyName = jsonReader.GetString();
+                        jsonReader.Read(); // move to the value
+
+                        switch (propertyName)
+                        {
+                            case "id":
+                                item.id = jsonReader.GetString();
+                                break;
+                            case "date":
+                                item.date = jsonReader.GetString();
+                                break;
+                            case "la":
+                                item.la = jsonReader.GetSingle(); // or GetDouble() if you're using double
+                                break;
+                            case "lo":
+                                item.lo = jsonReader.GetSingle();
+                                break;
+                            case "icon":
+                                item.icon = jsonReader.GetString();
+                                break;
+                            case "isApproved":
+                                item.isApproved = jsonReader.TokenType == JsonTokenType.Null ? null : jsonReader.GetBoolean();
+                                break;
+                        }
+                    }
+                }
+
+                result.Add(item);
+            }
+        }
+
+        return result;
+    }
+
+    private async Task<List<JsonFile>> ParseCsvFile(Stream csvContent)
+    {
+        var result = new List<JsonFile>();
+        using var reader = new StreamReader(csvContent);
+
+        char[] buffer = ArrayPool<char>.Shared.Rent(8192);
+        try
+        {
+            bool isHeader = true;
+
+            while (!reader.EndOfStream)
+            {
+                var line = await reader.ReadLineAsync().ConfigureAwait(false);
+                if (string.IsNullOrWhiteSpace(line))
+                    continue;
+
+                if (isHeader)
+                {
+                    isHeader = false;
+                    continue; // skip header
+                }
+
+                int col = 0;
+                int i = 0, start = 0;
+                Span<string> fields = new string[5]; // we expect 6 fields
+
+                for (; i <= line.Length; i++)
+                {
+                    if (i == line.Length || line[i] == ',')
+                    {
+                        fields[col++] = line.AsSpan(start, i - start).Trim().ToString();
+                        start = i + 1;
+
+                        if (col >= fields.Length)
+                            break;
+                    }
+                }
+
+                result.Add(new JsonFile
+                    {
+                        id = fields[0],
+                        date = fields[1],
+                        la = float.TryParse(fields[2], NumberStyles.Float, CultureInfo.InvariantCulture, out var la) ? la : 0f,
+                        lo = float.TryParse(fields[3], NumberStyles.Float, CultureInfo.InvariantCulture, out var lo) ? lo : 0f,
+                        icon = fields[4],
+                        //isApproved = bool.TryParse(fields[5], out var isApproved) ? isApproved : (bool?)null
+                    });
+            }
+        }
+        finally
+        {
+            ArrayPool<char>.Shared.Return(buffer);
+        }
+
+        return result;
+    }
+    private static List<string> ParseCsvLine(ReadOnlySpan<char> line)
+    {
+        List<string> columns = new(8); // or known column count
+        int start = 0;
+
+        for (int i = 0; i <= line.Length; i++)
+        {
+            if (i == line.Length || line[i] == ',')
+            {
+                var field = line.Slice(start, i - start).Trim();
+                columns.Add(field.ToString()); // allocate here, only once per field
+                start = i + 1;
+            }
+        }
+
+        return columns;
     }
 }
